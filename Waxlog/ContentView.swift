@@ -33,9 +33,12 @@ struct ContentView: View {
         // Filter by search text
         if !searchText.isEmpty {
             filtered = filtered.filter { record in
+                // Search both original data and display versions for better user experience
                 record.artist.localizedCaseInsensitiveContains(searchText) ||
+                record.displayArtist.localizedCaseInsensitiveContains(searchText) ||
                 record.title.localizedCaseInsensitiveContains(searchText) ||
-                record.label.localizedCaseInsensitiveContains(searchText)
+                record.label.localizedCaseInsensitiveContains(searchText) ||
+                record.displayLabel.localizedCaseInsensitiveContains(searchText)
             }
         }
         
@@ -128,6 +131,14 @@ struct ContentView: View {
             }
             .searchable(text: $searchText, prompt: "Search records")
             .navigationTitle("Waxlog")
+            .safeAreaInset(edge: .bottom) {
+                // CloudKit sync status
+                SyncStatusView()
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding()
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     EditButton()
@@ -344,7 +355,7 @@ struct VinylRecordRow: View {
             .cornerRadius(8)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text(record.artist)
+                Text(record.displayArtist)
                     .font(.headline)
                     .lineLimit(1)
                 
@@ -353,7 +364,7 @@ struct VinylRecordRow: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                 
-                Text(record.label)
+                Text(record.displayLabel)
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)

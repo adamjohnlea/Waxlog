@@ -79,7 +79,7 @@ struct VinylRecordDetailView: View {
                 Spacer()
             }
             
-            Text(record.artist)
+            Text(record.displayArtist)
                 .font(.title)
                 .fontWeight(.bold)
             
@@ -88,7 +88,7 @@ struct VinylRecordDetailView: View {
                 .foregroundColor(.secondary)
             
             HStack {
-                Label(record.label, systemImage: "tag")
+                Label(record.displayLabel, systemImage: "tag")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 

@@ -12,13 +12,29 @@ import SwiftData
 struct WaxlogApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            VinylRecord.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        
+        // Enable CloudKit sync with proper configuration
+        let modelConfiguration = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .automatic
+        )
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            
+            // Optional: Print CloudKit container identifier for debugging
+            #if DEBUG
+            print("📱 CloudKit container configured successfully")
+            #endif
+            
+            return container
         } catch {
+            #if DEBUG
+            print("❌ Failed to create ModelContainer: \(error)")
+            #endif
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
@@ -26,6 +42,12 @@ struct WaxlogApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onAppear {
+                    // Optional: Log CloudKit setup on first appearance
+                    #if DEBUG
+                    print("🚀 Waxlog launched with CloudKit sync enabled")
+                    #endif
+                }
         }
         .modelContainer(sharedModelContainer)
     }

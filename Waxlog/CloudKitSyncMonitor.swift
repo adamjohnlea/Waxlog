@@ -11,11 +11,13 @@ import CloudKit
 
 @Observable
 final class CloudKitSyncMonitor {
-    private(set) var syncStatus: SyncStatus = .notSyncing
+    private(set) var syncStatus: SyncStatus = .checking
     private(set) var lastSyncDate: Date?
     private(set) var errorMessage: String?
+    private(set) var recordCount: Int = 0
     
     enum SyncStatus {
+        case checking
         case notSyncing
         case syncing
         case completed
@@ -39,18 +41,19 @@ final class CloudKitSyncMonitor {
                     case .available:
                         self.syncStatus = .completed
                         self.errorMessage = nil
+                        self.lastSyncDate = Date()
                     case .noAccount:
                         self.syncStatus = .error
-                        self.errorMessage = "No iCloud account signed in"
+                        self.errorMessage = "Please sign in to iCloud in Settings"
                     case .restricted:
                         self.syncStatus = .error
-                        self.errorMessage = "iCloud account restricted"
+                        self.errorMessage = "iCloud account is restricted"
                     case .couldNotDetermine:
                         self.syncStatus = .error
-                        self.errorMessage = "Could not determine iCloud status"
+                        self.errorMessage = "Cannot determine iCloud status"
                     case .temporarilyUnavailable:
                         self.syncStatus = .error
-                        self.errorMessage = "iCloud temporarily unavailable"
+                        self.errorMessage = "iCloud is temporarily unavailable"
                     @unknown default:
                         self.syncStatus = .error
                         self.errorMessage = "Unknown iCloud status"
@@ -59,10 +62,15 @@ final class CloudKitSyncMonitor {
             } catch {
                 await MainActor.run {
                     self.syncStatus = .error
-                    self.errorMessage = "Error checking iCloud status: \(error.localizedDescription)"
+                    self.errorMessage = "iCloud error: \(error.localizedDescription)"
                 }
             }
         }
+    }
+    
+    func refresh() {
+        syncStatus = .checking
+        checkAccountStatus()
     }
 }
 
@@ -74,15 +82,29 @@ struct SyncStatusView: View {
         HStack {
             Image(systemName: statusIcon)
                 .foregroundColor(statusColor)
+                .imageScale(.small)
             
             Text(statusText)
                 .font(.caption)
                 .foregroundColor(.secondary)
+            
+            Spacer()
+            
+            if syncMonitor.syncStatus == .error {
+                Button("Retry") {
+                    syncMonitor.refresh()
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
         }
     }
     
     private var statusIcon: String {
         switch syncMonitor.syncStatus {
+        case .checking:
+            return "icloud"
         case .notSyncing:
             return "icloud"
         case .syncing:
@@ -96,6 +118,8 @@ struct SyncStatusView: View {
     
     private var statusColor: Color {
         switch syncMonitor.syncStatus {
+        case .checking:
+            return .secondary
         case .notSyncing:
             return .secondary
         case .syncing:
@@ -113,6 +137,8 @@ struct SyncStatusView: View {
         }
         
         switch syncMonitor.syncStatus {
+        case .checking:
+            return "Checking iCloud status..."
         case .notSyncing:
             return "iCloud sync ready"
         case .syncing:

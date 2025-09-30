@@ -10,19 +10,22 @@ import SwiftData
 
 @Model
 final class VinylRecord {
-    // Basic record information
-    var catalogNumber: String
-    var artist: String
-    var title: String
-    var label: String
-    var format: String
+    // CloudKit-friendly identifier (no unique constraint for CloudKit)
+    var id: UUID = UUID()
+    
+    // Basic record information - with default values for CloudKit compatibility
+    @Attribute(.spotlight) var catalogNumber: String = ""
+    @Attribute(.spotlight) var artist: String = ""
+    @Attribute(.spotlight) var title: String = ""
+    @Attribute(.spotlight) var label: String = ""
+    var format: String = ""
     var released: Int?
     var releaseID: Int?
     
     // Personal collection data
     var rating: Int?
-    var collectionFolder: String
-    var dateAdded: Date
+    var collectionFolder: String = "Vinyl"
+    var dateAdded: Date = Date()
     var mediaCondition: String?
     var sleeveCondition: String?
     var notes: String?
@@ -36,6 +39,10 @@ final class VinylRecord {
         coverImageData != nil
     }
     
+    var isValid: Bool {
+        !catalogNumber.isEmpty && !artist.isEmpty && !title.isEmpty && !label.isEmpty && !format.isEmpty
+    }
+    
     var displayRating: String {
         guard let rating = rating else { return "Unrated" }
         return String(repeating: "★", count: rating) + String(repeating: "☆", count: 5 - rating)
@@ -43,6 +50,30 @@ final class VinylRecord {
     
     var formattedDateAdded: String {
         dateAdded.formatted(date: .numeric, time: .omitted)
+    }
+    
+    // Display versions without Discogs disambiguation numbers
+    var displayArtist: String {
+        removeDiscogsDisambiguation(from: artist)
+    }
+    
+    var displayLabel: String {
+        removeDiscogsDisambiguation(from: label)
+    }
+    
+    // Helper function to remove disambiguation numbers like "(2)" or "(3)"
+    private func removeDiscogsDisambiguation(from text: String) -> String {
+        // Regular expression to match disambiguation numbers at the end: " (number)"
+        let pattern = #"\s\(\d+\)$"#
+        
+        do {
+            let regex = try NSRegularExpression(pattern: pattern, options: [])
+            let range = NSRange(location: 0, length: text.utf16.count)
+            return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        } catch {
+            // If regex fails for some reason, return original text
+            return text
+        }
     }
     
     init(
@@ -62,6 +93,7 @@ final class VinylRecord {
         coverImageData: Data? = nil,
         coverImageURL: String? = nil
     ) {
+        // Don't override the UUID - let the default value handle it
         self.catalogNumber = catalogNumber
         self.artist = artist
         self.title = title

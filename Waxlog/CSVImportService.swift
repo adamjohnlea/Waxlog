@@ -54,17 +54,8 @@ class CSVImportService {
                 importProgress = Double(index + 1) / Double(rows.count)
             }
             
-            // Download cover art if we have a release ID
-            if let releaseID = record.releaseID {
-                do {
-                    if let imageData = try await imageDownloader.downloadCoverArt(releaseID: releaseID) {
-                        record.coverImageData = imageData
-                    }
-                } catch {
-                    print("Failed to download cover art for \(record.artist) - \(record.title): \(error)")
-                    // Continue without image - don't fail the entire import
-                }
-            }
+            // Skip image download during CSV import to avoid rate limits
+            // We'll download images separately with the ArtworkDownloadService
             
             // Insert record into SwiftData
             modelContext.insert(record)
@@ -138,9 +129,94 @@ class CSVImportService {
 }
 
 @Observable
+class ArtworkDownloadService {
+    var isDownloading = false
+    var downloadProgress: Double = 0.0
+    var downloadedCount = 0
+    var totalCount = 0
+    var currentlyDownloading = ""
+    var errorMessage: String?
+    
+    private let imageDownloader = ImageDownloadService()
+    
+    func downloadArtworkForRecords(_ records: [VinylRecord], modelContext: ModelContext) async {
+        await MainActor.run {
+            isDownloading = true
+            downloadProgress = 0.0
+            downloadedCount = 0
+            totalCount = records.count
+            errorMessage = nil
+        }
+        
+        defer {
+            Task { @MainActor in
+                isDownloading = false
+                currentlyDownloading = ""
+            }
+        }
+        
+        // Process each record
+        for (index, record) in records.enumerated() {
+            guard let releaseID = record.releaseID else {
+                await MainActor.run {
+                    downloadedCount += 1
+                    downloadProgress = Double(downloadedCount) / Double(totalCount)
+                }
+                continue
+            }
+            
+            await MainActor.run {
+                currentlyDownloading = "\(record.artist) - \(record.title)"
+            }
+            
+            do {
+                if let imageData = try await imageDownloader.downloadCoverArt(releaseID: releaseID) {
+                    await MainActor.run {
+                        record.coverImageData = imageData
+                    }
+                }
+            } catch {
+                print("Failed to download cover art for \(record.artist) - \(record.title): \(error)")
+                // Continue with other downloads
+                if error is ImageDownloadError {
+                    await MainActor.run {
+                        errorMessage = "Some downloads failed - will continue with others"
+                    }
+                }
+            }
+            
+            await MainActor.run {
+                downloadedCount += 1
+                downloadProgress = Double(downloadedCount) / Double(totalCount)
+            }
+            
+            // Save periodically
+            if (index + 1) % 10 == 0 {
+                do {
+                    try modelContext.save()
+                } catch {
+                    print("Error saving artwork: \(error)")
+                }
+            }
+        }
+        
+        // Final save
+        do {
+            try modelContext.save()
+        } catch {
+            await MainActor.run {
+                errorMessage = "Error saving artwork: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+@Observable
 class ImageDownloadService {
     private let session = URLSession.shared
     private var cache: [Int: Data] = [:]
+    private var lastRequestTime: Date = Date.distantPast
+    private let minimumDelayBetweenRequests: TimeInterval = 1.1 // Just over 1 second for 60/minute limit
     
     func downloadCoverArt(releaseID: Int) async throws -> Data? {
         // Check cache first
@@ -148,8 +224,31 @@ class ImageDownloadService {
             return cachedData
         }
         
-        // This is a simplified example - you'll need to implement
-        // proper Discogs API integration with authentication
+        // Retry logic for rate limits
+        for attempt in 1...3 {
+            do {
+                return try await attemptDownload(releaseID: releaseID)
+            } catch ImageDownloadError.rateLimited {
+                if attempt < 3 {
+                    // Wait longer for rate limit
+                    let backoffDelay = TimeInterval(attempt * 5) // 5, 10 seconds
+                    try? await Task.sleep(nanoseconds: UInt64(backoffDelay * 1_000_000_000))
+                    continue
+                } else {
+                    throw ImageDownloadError.rateLimited
+                }
+            } catch {
+                throw error
+            }
+        }
+        
+        return nil
+    }
+    
+    private func attemptDownload(releaseID: Int) async throws -> Data? {
+        // Rate limiting - wait if we need to
+        await enforceRateLimit()
+        
         let discogsURL = "https://api.discogs.com/releases/\(releaseID)"
         
         guard let url = URL(string: discogsURL) else {
@@ -157,48 +256,71 @@ class ImageDownloadService {
         }
         
         var request = URLRequest(url: url)
-        // Add User-Agent header required by Discogs API
-        request.setValue("WaxlogApp/1.0", forHTTPHeaderField: "User-Agent")
+        // Add proper User-Agent header required by Discogs API
+        request.setValue("WaxlogApp/1.0 +https://example.com/contact", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 30
         
-        do {
-            let (data, response) = try await session.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else {
-                throw ImageDownloadError.httpError
-            }
-            
-            // Parse JSON response to get image URL
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let images = json["images"] as? [[String: Any]],
-               let firstImage = images.first,
-               let imageURLString = firstImage["uri"] as? String,
-               let imageURL = URL(string: imageURLString) {
-                
-                // Download the actual image
-                let (imageData, imageResponse) = try await session.data(from: imageURL)
-                
-                guard let httpImageResponse = imageResponse as? HTTPURLResponse,
-                      httpImageResponse.statusCode == 200 else {
-                    throw ImageDownloadError.httpError
-                }
-                
-                // Cache the image data
-                cache[releaseID] = imageData
-                return imageData
-            }
-            
-        } catch {
-            throw ImageDownloadError.networkError(error)
+        let (data, response) = try await session.data(for: request)
+        lastRequestTime = Date()
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ImageDownloadError.httpError
         }
         
-        return nil
+        // Handle different response codes
+        switch httpResponse.statusCode {
+        case 200:
+            // Success - continue
+            break
+        case 429:
+            // Rate limited
+            throw ImageDownloadError.rateLimited
+        case 404:
+            // Not found - might not have images
+            return nil
+        default:
+            throw ImageDownloadError.httpError
+        }
+        
+        // Parse JSON response to get image URL
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let images = json["images"] as? [[String: Any]],
+              let firstImage = images.first,
+              let imageURLString = firstImage["uri"] as? String,
+              let imageURL = URL(string: imageURLString) else {
+            // No images found
+            return nil
+        }
+        
+        // Download the actual image (with another rate limit check)
+        await enforceRateLimit()
+        
+        let (imageData, imageResponse) = try await session.data(from: imageURL)
+        lastRequestTime = Date()
+        
+        guard let httpImageResponse = imageResponse as? HTTPURLResponse,
+              httpImageResponse.statusCode == 200 else {
+            throw ImageDownloadError.httpError
+        }
+        
+        // Cache the image data
+        cache[releaseID] = imageData
+        return imageData
+    }
+    
+    private func enforceRateLimit() async {
+        let timeSinceLastRequest = Date().timeIntervalSince(lastRequestTime)
+        if timeSinceLastRequest < minimumDelayBetweenRequests {
+            let delayNeeded = minimumDelayBetweenRequests - timeSinceLastRequest
+            try? await Task.sleep(nanoseconds: UInt64(delayNeeded * 1_000_000_000))
+        }
     }
 }
 
 enum ImageDownloadError: LocalizedError {
     case invalidURL
     case httpError
+    case rateLimited
     case networkError(Error)
     
     var errorDescription: String? {
@@ -207,6 +329,8 @@ enum ImageDownloadError: LocalizedError {
             return "Invalid URL for image download"
         case .httpError:
             return "HTTP error occurred while downloading image"
+        case .rateLimited:
+            return "Rate limited - too many requests"
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
         }
